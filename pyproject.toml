@@ -1,0 +1,17 @@
+[project]
+name = "surya-tec-forecasting"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Amrit Madabushi", email = "76710243+AmritM1015@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+surya-tec-forecasting = "surya_tec_forecasting:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
