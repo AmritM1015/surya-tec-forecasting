@@ -37,8 +37,8 @@ import datetime
 import sys
 
 # ── user info required by Madrigal Rules-of-the-Road ──────────────────────────
-USER_NAME        = "Peter Daudelin"
-USER_EMAIL       = "pd475@njit.edu"
+USER_NAME        = "Amrit Madabushi"
+USER_EMAIL       = "am2699@njit.edu"
 USER_AFFILIATION = "NJIT"
 
 # ── query parameters ───────────────────────────────────────────────────────────

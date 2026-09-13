@@ -7,7 +7,12 @@ authors = [
     { name = "Amrit Madabushi", email = "76710243+AmritM1015@users.noreply.github.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "madrigalweb>=3.3.8",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.3",
+    "pandas>=3.0.5",
+]
 
 [project.scripts]
 surya-tec-forecasting = "surya_tec_forecasting:main"
