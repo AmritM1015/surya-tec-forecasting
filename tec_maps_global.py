@@ -35,6 +35,9 @@ Outputs:
 
 import datetime
 import sys
+from pathlib import Path
+
+TEC_DIR = Path("tec_hdf5")
 
 # ── user info required by Madrigal Rules-of-the-Road ──────────────────────────
 USER_NAME        = "Amrit Madabushi"
@@ -70,6 +73,53 @@ OUTPUT_CSV    = "tec_maps_global_data.csv"
 OUTPUT_8PANEL = "tec_maps_global_8panel.png"
 
 # ──────────────────────────────────────────────────────────────────────────────
+
+# ------------- Local section (read files locally instead - isprint doesnt load properly) -----
+def load_local_tec_files(tec_dir):
+    import h5py
+    import pandas as pd
+
+    files = sorted(tec_dir.glob("gps*.hdf5"))
+
+    if not files:
+        raise FileNotFoundError(
+            f"No gps*.hdf5 files found in {tec_dir}"
+        )
+
+    frames = []
+
+    for path in files:
+        print(f"Reading {path.name} ...")
+
+        with h5py.File(path, "r") as f:
+            # Madrigal HDF5 files store the tabular measurements here
+            table = f["Data"]["Table Layout"]
+
+        # structured NumPy array -> pandas DataFrame
+        df = pd.DataFrame.from_records(table)
+
+        # normalize field names
+        df.columns = [str(c).lower() for c in df.columns]
+
+        required = [
+            "year", "month", "day",
+            "hour", "min", "sec",
+            "gdlat", "glon", "tec",
+        ]
+
+        missing = [c for c in required if c not in df.columns]
+
+        if missing:
+            print(f"  Skipping {path.name}; missing {missing}")
+            continue
+
+        frames.append(df[required])
+
+    if not frames:
+        raise RuntimeError("No usable TEC data found.")
+
+    return pd.concat(frames, ignore_index=True)
+# ----------------------------------------------------------------------------------------------
 
 
 def check_deps():
@@ -149,99 +199,129 @@ def main():
     import matplotlib.gridspec as gridspec
     import numpy as np
 
-    print(f"Connecting to {MADRIGAL_URL} ...")
-    access = mw.MadrigalData(MADRIGAL_URL)
+    # ── 1. load downloaded TEC files ─────────────────────────────────────────
+    data = load_local_tec_files(TEC_DIR)
 
-    # ── 1. find experiments ────────────────────────────────────────────────────
-    print(f"Searching instrument {INST_CODE} "
-          f"{START_DATE.date()} (CEDAR only) ...")
-
-    experiments = access.getExperiments(
-        INST_CODE,
-        START_DATE.year, START_DATE.month, START_DATE.day, 0, 0, 0,
-        END_DATE.year,   END_DATE.month,   END_DATE.day,   23, 59, 59,
-        local=1,
+    # ── 2. construct timestamps / clean ──────────────────────────────────────
+    data["datetime"] = pd.to_datetime(
+        data[["year", "month", "day", "hour", "min", "sec"]]
     )
 
-    if not experiments:
-        print("No experiments found.")
-        return
+    data = (
+        data
+        .dropna(subset=["datetime"])
+        .sort_values(["datetime", "gdlat", "glon"])
+        .reset_index(drop=True)
+    )
 
-    print(f"Found {len(experiments)} experiment(s).")
-
-    # ── 2. collect binned files ────────────────────────────────────────────────
-    chosen_files = []
-    for exp in experiments:
-        for f in access.getExperimentFiles(exp.id):
-            if FILE_FILTER.lower() in f.kindatdesc.lower():
-                chosen_files.append(f)
-
-    if not chosen_files:
-        print("No binned files found.")
-        return
-
-    print(f"\nQuerying {len(chosen_files)} file(s) [{FILE_FILTER}] — NO spatial filter (global):")
-    for f in chosen_files:
-        print(f"  {f.name.split('/')[-1]}  [{f.kindatdesc}]")
-
-    # ── 3. fetch — no spatial filter ──────────────────────────────────────────
-    all_cols = ["year", "month", "day", "hour", "min", "sec"] + PARAMETERS.split(",")
-    parm_str = ",".join(all_cols)
-
-    frames = []
-    for f in chosen_files:
-        fname = f.name.split("/")[-1]
-        print(f"\nFetching {fname} (global — this may take several minutes) ...")
-        try:
-            result = access.isprint(
-                f.name, parm_str, FILTER_STR,
-                USER_NAME, USER_EMAIL, USER_AFFILIATION,
-            )
-            rows = parse_isprint_text(result, all_cols)
-            if rows:
-                df = pd.DataFrame(rows, columns=all_cols)
-                frames.append(df)
-                print(f"  -> {len(df)} records")
-            else:
-                print("  -> empty result")
-        except Exception as e:
-            print(f"  -> error: {e}")
-
-    if not frames:
-        print("\nNo data retrieved.")
-        return
-
-    # ── 4. assemble and clean ──────────────────────────────────────────────────
-    data = pd.concat(frames, ignore_index=True)
-
-    for col in data.columns:
-        data[col] = pd.to_numeric(data[col], errors="coerce")
-
-    def to_dt(row):
-        try:
-            return datetime.datetime(
-                int(row["year"]), int(row["month"]), int(row["day"]),
-                int(row["hour"]), int(row["min"]),   int(row["sec"]),
-            )
-        except Exception:
-            return None
-
-    data["datetime"] = data.apply(to_dt, axis=1)
-    data = data.dropna(subset=["datetime"]).sort_values(["datetime", "gdlat", "glon"]).reset_index(drop=True)
-    data.loc[data["tec"] > 1e20, "tec"] = float("nan")
+    data.loc[data["tec"] > 1e20, "tec"] = np.nan
 
     valid = data["tec"].dropna()
+
     print(f"\nTotal records     : {len(data)}")
-    print(f"Time range        : {data['datetime'].min()}  ->  {data['datetime'].max()}")
+    print(f"Time range        : {data['datetime'].min()} -> {data['datetime'].max()}")
     print(f"Unique lat cells  : {data['gdlat'].nunique()}")
     print(f"Unique lon cells  : {data['glon'].nunique()}")
-    if len(valid):
-        print(f"TEC (TECU)        : min={valid.min():.2f}  "
-              f"median={valid.median():.2f}  max={valid.max():.2f}")
 
-    # ── 5. save CSV ────────────────────────────────────────────────────────────
-    data.to_csv(OUTPUT_CSV, index=False)
-    print(f"\nSaved -> {OUTPUT_CSV}")
+    if len(valid):
+        print(
+            f"TEC (TECU)        : min={valid.min():.2f} "
+            f"median={valid.median():.2f} "
+            f"max={valid.max():.2f}"
+        )
+
+    # print(f"Connecting to {MADRIGAL_URL} ...")
+    # access = mw.MadrigalData(MADRIGAL_URL)
+    # # ── 1. find experiments ────────────────────────────────────────────────────
+    # print(f"Searching instrument {INST_CODE} "
+    #       f"{START_DATE.date()} (CEDAR only) ...")
+
+    # experiments = access.getExperiments(
+    #     INST_CODE,
+    #     START_DATE.year, START_DATE.month, START_DATE.day, 0, 0, 0,
+    #     END_DATE.year,   END_DATE.month,   END_DATE.day,   23, 59, 59,
+    #     local=1,
+    # )
+
+    # if not experiments:
+    #     print("No experiments found.")
+    #     return
+
+    # print(f"Found {len(experiments)} experiment(s).")
+
+    # # ── 2. collect binned files ────────────────────────────────────────────────
+    # chosen_files = []
+    # for exp in experiments:
+    #     for f in access.getExperimentFiles(exp.id):
+    #         if FILE_FILTER.lower() in f.kindatdesc.lower():
+    #             chosen_files.append(f)
+
+    # if not chosen_files:
+    #     print("No binned files found.")
+    #     return
+
+    # print(f"\nQuerying {len(chosen_files)} file(s) [{FILE_FILTER}] — NO spatial filter (global):")
+    # for f in chosen_files:
+    #     print(f"  {f.name.split('/')[-1]}  [{f.kindatdesc}]")
+
+    # # ── 3. fetch — no spatial filter ──────────────────────────────────────────
+    # all_cols = ["year", "month", "day", "hour", "min", "sec"] + PARAMETERS.split(",")
+    # parm_str = ",".join(all_cols)
+
+    # frames = []
+    # for f in chosen_files:
+    #     fname = f.name.split("/")[-1]
+    #     print(f"\nFetching {fname} (global — this may take several minutes) ...")
+    #     try:
+    #         result = access.isprint(
+    #             f.name, parm_str, FILTER_STR,
+    #             USER_NAME, USER_EMAIL, USER_AFFILIATION,
+    #         )
+    #         rows = parse_isprint_text(result, all_cols)
+    #         if rows:
+    #             df = pd.DataFrame(rows, columns=all_cols)
+    #             frames.append(df)
+    #             print(f"  -> {len(df)} records")
+    #         else:
+    #             print("  -> empty result")
+    #     except Exception as e:
+    #         print(f"  -> error: {e}")
+
+    # if not frames:
+    #     print("\nNo data retrieved.")
+    #     return
+
+    # # ── 4. assemble and clean ──────────────────────────────────────────────────
+    # data = pd.concat(frames, ignore_index=True)
+
+    # for col in data.columns:
+    #     data[col] = pd.to_numeric(data[col], errors="coerce")
+
+    # def to_dt(row):
+    #     try:
+    #         return datetime.datetime(
+    #             int(row["year"]), int(row["month"]), int(row["day"]),
+    #             int(row["hour"]), int(row["min"]),   int(row["sec"]),
+    #         )
+    #     except Exception:
+    #         return None
+
+    # data["datetime"] = data.apply(to_dt, axis=1)
+    # data = data.dropna(subset=["datetime"]).sort_values(["datetime", "gdlat", "glon"]).reset_index(drop=True)
+    # data.loc[data["tec"] > 1e20, "tec"] = float("nan")
+
+    # valid = data["tec"].dropna()
+    # print(f"\nTotal records     : {len(data)}")
+    # print(f"Time range        : {data['datetime'].min()}  ->  {data['datetime'].max()}")
+    # print(f"Unique lat cells  : {data['gdlat'].nunique()}")
+    # print(f"Unique lon cells  : {data['glon'].nunique()}")
+    # if len(valid):
+    #     print(f"TEC (TECU)        : min={valid.min():.2f}  "
+    #           f"median={valid.median():.2f}  max={valid.max():.2f}")
+
+    # # ── 5. save CSV ────────────────────────────────────────────────────────────
+    # data.to_csv(OUTPUT_CSV, index=False)
+    # print(f"\nSaved -> {OUTPUT_CSV}")
 
     # ── 6. select 8 sample timestamps ─────────────────────────────────────────
     print("\nSelecting 8 sample map times (3-hour intervals) ...")
