@@ -1,5 +1,6 @@
 .venv
 *.csv
 \tec_hdf5
+\tec_grids
 \figures
 \solar_observations
